@@ -1,0 +1,254 @@
+#include <Wire.h>
+#include <Adafruit_SSD1306.h>
+#include <GyverMAX6675.h>
+#include <EEPROM.h>
+
+#define CLK_PIN   13
+#define DATA_PIN  12
+#define CS_PIN    10
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 32
+#define OLED_RESET    -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+#define MAX6675_DELAY 10             
+#define MAX6675_SPI_SPEED 300000     
+GyverMAX6675<CLK_PIN, DATA_PIN, CS_PIN> sens;
+
+#define BUTTON_MENU 3   
+#define BUTTON_LEFT 7   
+#define BUTTON_RIGHT 5  
+#define BUTTON_OK 2     
+#define HEATER_PIN 9  
+#define LED_PIN 8      
+#define BUTTON_HEATER 4  
+#define BUZZER_PIN A2  
+
+bool heaterState = false;  
+int tempSet;    
+int gist;        
+int cal;         
+int temperature = 0;
+
+enum AppState { STATE_MAIN, STATE_MENU };
+AppState currentState = STATE_MAIN;
+int menuIndex = 0;
+
+void loadSettings() {
+  EEPROM.get(0, tempSet);
+  EEPROM.get(sizeof(int), gist);
+  EEPROM.get(2 * sizeof(int), cal);
+  if (tempSet < 0 || tempSet > 300) tempSet = 100;
+  if (gist < 0 || gist > 50) gist = 5;
+  if (cal < -100 || cal > 100) cal = 0;
+}
+
+void saveSettings() {
+  EEPROM.put(0, tempSet);
+  EEPROM.put(sizeof(int), gist);
+  EEPROM.put(2 * sizeof(int), cal);
+}
+
+void setup() {
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(HEATER_PIN, OUTPUT);
+  pinMode(LED_PIN, OUTPUT);  
+  pinMode(BUTTON_HEATER, INPUT_PULLUP);
+  pinMode(BUTTON_MENU, INPUT_PULLUP);
+  pinMode(BUTTON_LEFT, INPUT_PULLUP);
+  pinMode(BUTTON_RIGHT, INPUT_PULLUP);
+  pinMode(BUTTON_OK, INPUT_PULLUP);
+  digitalWrite(HEATER_PIN, LOW);
+  digitalWrite(LED_PIN, LOW);  
+
+  Serial.begin(9600);
+  delay(500);
+
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("Не удалось найти дисплей!"));
+    while (true);
+  }
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.display();
+
+  loadSettings();
+}
+
+unsigned long previousMillis = 0;  
+const long interval = 100;  
+bool beepPlayed = false;  
+
+void beep() {
+  tone(BUZZER_PIN, 1000, 200);  
+}
+
+void updateMainDisplay() {
+  display.clearDisplay();
+  display.setTextSize(2);
+  display.setCursor(0, 0);
+  display.print(temperature, 1);
+  display.print(" C");
+
+  display.setTextSize(1);
+  display.setCursor(80, 0);
+  display.print("Target:");
+  display.setCursor(80, 10);
+  display.print(tempSet);
+  display.print(" C");
+
+  display.setCursor(0, 24);
+  display.print("Heater: ");
+  display.print(heaterState ? (temperature < tempSet ? "ON" : "OFF") : "MANUAL OFF");
+
+  display.display();
+}
+
+void updateMenuDisplay() {
+  display.clearDisplay();
+  display.setCursor(104, 10);
+  display.print("MENU");
+
+  display.setCursor(0, 0);
+  if (menuIndex == 0) {
+    display.print("1. TEMP SET: ");
+    display.print(tempSet);
+  } 
+  else if (menuIndex == 1) {
+    display.print("2. GIST: ");
+    display.print(gist);
+  } 
+  else if (menuIndex == 2) {
+    display.print("3. CAL: ");
+    display.print(cal);
+  }
+
+  display.setCursor(0, 20);
+  display.print("L:- R:+ OK:Next");
+  display.display();
+}
+
+void pollMenuButtons() {
+  static unsigned long buttonPressStartTime = 0; 
+  static bool buttonPressed = false;
+
+  if (digitalRead(BUTTON_LEFT) == LOW) {
+    if (!buttonPressed) {
+      buttonPressStartTime = millis();  
+      buttonPressed = true;
+      beep();
+    }
+
+    unsigned long buttonPressDuration = millis() - buttonPressStartTime; 
+    if (buttonPressDuration >= 3000) {  
+      if (menuIndex == 0 && tempSet > 5) tempSet -= 5;  
+      else if (menuIndex == 1 && gist > 1) gist -= 5;  
+      else if (menuIndex == 2 && cal > -100) cal -= 5; 
+    } else {
+      // Если кнопка нажата меньше 3 секунд, уменьшаем на 1
+      if (menuIndex == 0 && tempSet > 0) tempSet--;
+      else if (menuIndex == 1 && gist > 0) gist--;
+      else if (menuIndex == 2 && cal > -100) cal--;
+      beep();
+    }
+
+    delay(150);
+  } 
+  else if (digitalRead(BUTTON_RIGHT) == LOW) {
+    if (!buttonPressed) {
+      buttonPressStartTime = millis();
+      buttonPressed = true;
+      beep();
+    }
+
+    unsigned long buttonPressDuration = millis() - buttonPressStartTime;
+
+    if (buttonPressDuration >= 3000) {
+      if (menuIndex == 0) tempSet += 5;  
+      else if (menuIndex == 1) gist += 5;  
+      else if (menuIndex == 2 && cal < 100) cal += 5; 
+    } else {
+      if (menuIndex == 0) tempSet++;
+      else if (menuIndex == 1) gist++;
+      else if (menuIndex == 2 && cal < 100) cal++;
+    beep();
+    }
+    
+
+    delay(150);
+  }
+
+  if (digitalRead(BUTTON_OK) == LOW) {
+    delay(150);
+    beep();  
+    menuIndex++;
+    if (menuIndex >= 3) {
+      saveSettings();
+      currentState = STATE_MAIN;
+    }
+  }
+
+  
+  if (digitalRead(BUTTON_LEFT) == HIGH && digitalRead(BUTTON_RIGHT) == HIGH) {
+    buttonPressed = false;
+  }
+}
+
+void loop() {
+  static bool lastButtonState = HIGH;
+  static unsigned long lastDebounceTime = 0;
+  const unsigned long debounceDelay = 50;
+
+  bool buttonState = digitalRead(BUTTON_HEATER);
+  if (buttonState == LOW && lastButtonState == HIGH && (millis() - lastDebounceTime) > debounceDelay) {
+    lastDebounceTime = millis();
+    heaterState = !heaterState;
+    digitalWrite(HEATER_PIN, heaterState ? HIGH : LOW);
+    digitalWrite(LED_PIN, heaterState ? HIGH : LOW);  
+    beep();  
+  }
+  lastButtonState = buttonState;
+
+  if (currentState == STATE_MAIN) {
+    if (sens.readTemp()) {
+      temperature = sens.getTemp() + cal;
+    } else {
+      Serial.println("Ошибка чтения температуры");
+    }
+
+    updateMainDisplay();
+
+    if (digitalRead(BUTTON_MENU) == LOW) {
+      delay(200);
+      beep(); 
+      currentState = STATE_MENU;
+      menuIndex = 0;
+    }
+
+   
+    if (heaterState) {
+      if (temperature < tempSet - gist) {
+        digitalWrite(HEATER_PIN, HIGH);
+        digitalWrite(LED_PIN, HIGH);  
+        beepPlayed = false;  
+      } 
+      else if (temperature >= tempSet && !beepPlayed) {  
+        digitalWrite(HEATER_PIN, LOW);
+        digitalWrite(LED_PIN, LOW);  
+        beep();  
+        beepPlayed = true;  
+      }
+    } 
+    else {
+      digitalWrite(HEATER_PIN, LOW);
+      digitalWrite(LED_PIN, LOW);  
+    }
+
+    delay(1000);
+  }
+  else if (currentState == STATE_MENU) {
+    updateMenuDisplay();
+    pollMenuButtons();
+    delay(200);
+  }
+}
